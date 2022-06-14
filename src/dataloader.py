@@ -6,6 +6,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import scipy.io.wavfile as wavfile
 from PIL import Image
+from functools import reduce
+from pydub import AudioSegment
 from torchvision import transforms
 from torchvision.io import read_image
 from torch.utils.data import DataLoader, Dataset
@@ -47,14 +49,29 @@ class CustomImageDataset(Dataset):
                 lowest_dirs.append(root)
                 song_name = root.split('\\')[-1]
 
-                audio_fpaths = [fpath for fpath in os.listdir(root) if fpath.endswith('.ogg')]
+                audio = [AudioSegment.from_ogg(os.path.join(root, fname)) for fname in os.listdir(root)
+                         if os.path.join(root, fname).endswith('.ogg')]
 
+                combined_audio = reduce(lambda a, b: a+b, audio)
+                combined_audio.export(os.path.join('dataset', song_name+'.ogg'), format='ogg')
 
-                y, sr = librosa.load(root)
+                y, sr = librosa.effects.trim(combined_audio)
                 spec = spectrogram_image(y, sr, hop_length, n_mels)
                 spec_image = self.preprocess(spec).numpy()
                 im = Image.fromarray(spec_image)
                 im.save(os.path.join('dataset', song_name+'.png'))
+                exit()
+
+
+def audiosegment_to_librosawav(audiosegment):
+    channel_sounds = audiosegment.split_to_mono()
+    samples = [s.get_array_of_samples() for s in channel_sounds]
+
+    fp_arr = np.array(samples).T.astype(np.float32)
+    fp_arr /= np.iinfo(samples[0].typecode).max
+    fp_arr = fp_arr.reshape(-1)
+
+    return fp_arr
 
 
 def scale_minmax(X, min=0.0, max=1.0):
