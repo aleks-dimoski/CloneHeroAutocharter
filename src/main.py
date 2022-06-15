@@ -5,6 +5,7 @@ import torch
 import librosa
 import argparse
 import editdistance
+import matplotlib.pyplot as plt
 from dataloader import AudioDataset, pad_collate
 from torch.utils import data
 from torchvision import transforms
@@ -80,12 +81,12 @@ def run():
 
     config["gpu"] = torch.cuda.is_available()
 
-    dataset = AudioDataset(5, 15)
-    eval_dataset = AudioDataset(5, 15, type='eval')
+    dataset = AudioDataset('dataset', FLAGS.reload_dataset)
+    # dataset = AudioDataset('dataset', FLAGS.reload_dataset)
     BATCHSIZE = 16
     train_loader = data.DataLoader(dataset, batch_size=BATCHSIZE, shuffle=False, collate_fn=pad_collate, drop_last=True)
-    eval_loader = data.DataLoader(eval_dataset, batch_size=BATCHSIZE, shuffle=False, collate_fn=pad_collate,
-                                  drop_last=True)
+    # eval_loader = data.DataLoader(eval_dataset, batch_size=BATCHSIZE, shuffle=False, collate_fn=pad_collate,
+    #                               drop_last=True)
     config["batch_size"] = BATCHSIZE
 
     # Models
@@ -112,19 +113,25 @@ def run():
         elif 'weight' in name:
             torch.nn.init.xavier_normal_(param)
 
+    err = list()
     for epoch in range(FLAGS.epochs):
         run_state = (epoch, FLAGS.epochs, FLAGS.train_size)
 
         # Train needs to return model and optimizer, otherwise the model keeps restarting from zero at every epoch
         model, optimizer = train(model, optimizer, train_loader, run_state)
-        evaluate(model, eval_loader)
+        err.append(evaluate(model, train_loader))
 
         # TODO implement save models function
+    torch.save(model.state_dict(), os.path.join('results', 'model.pkl'))
+
+    plt.plot([i for i in range(len(err))], err)
+    plt.show()
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # parser.add_argument('--config', type=str)
+    parser.add_argument('-rd', '--reload_dataset', default=False, type=bool)
     parser.add_argument('-ep', '--epochs', default=50, type=int)
     parser.add_argument('-ts', '--train_size', default=3000, type=int)
     parser.add_argument('-es', '--eval_size', default=200, type=int)
