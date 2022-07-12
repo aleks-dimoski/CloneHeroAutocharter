@@ -2,6 +2,7 @@ import os
 import tqdm
 import json
 import torch
+import numpy as np
 import librosa
 import argparse
 import editdistance
@@ -10,6 +11,8 @@ from dataloader import AudioDataset, pad_collate
 from torch.utils import data
 from torchvision import transforms
 from seq2seq import Seq2Seq
+
+CUDA_LAUNCH_BLOCKING=1
 
 
 def train(model, optimizer, train_loader, state):
@@ -81,13 +84,13 @@ def run():
 
     config["gpu"] = torch.cuda.is_available()
 
-    dataset = AudioDataset('dataset', FLAGS.reload_dataset)
+    dataset = AudioDataset(r'C:\Users\aleks\Storage\Datasets\Songs', FLAGS.reload_dataset)
     # dataset = AudioDataset('dataset', FLAGS.reload_dataset)
-    BATCHSIZE = 16
-    train_loader = data.DataLoader(dataset, batch_size=BATCHSIZE, shuffle=False, collate_fn=pad_collate, drop_last=True)
+    # BATCHSIZE = 5
+    train_loader = data.DataLoader(dataset, batch_size=config["batch_size"], shuffle=False, collate_fn=pad_collate, drop_last=True)
     # eval_loader = data.DataLoader(eval_dataset, batch_size=BATCHSIZE, shuffle=False, collate_fn=pad_collate,
     #                               drop_last=True)
-    config["batch_size"] = BATCHSIZE
+    # config["batch_size"] = BATCHSIZE
 
     # Models
     model = Seq2Seq(config)

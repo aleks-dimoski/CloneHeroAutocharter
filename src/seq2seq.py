@@ -8,6 +8,7 @@ from models import EncoderRNN, AttentionDecoder, Decoder
 
 def check_size(tensor, *args):
     size = [a for a in args]
+    # print(torch.Size(size), tensor.size())
     assert tensor.size() == torch.Size(size), tensor.size()
 
 
@@ -58,11 +59,14 @@ class Seq2Seq(nn.Module):
         if config.get('loss') == 'cross_entropy':
             self.loss_fn = torch.nn.CrossEntropyLoss(ignore_index=0)
             config['loss'] = 'cross_entropy'
+        elif config.get('loss') == 'mean_squared_error':
+            self.loss_fn = torch.nn.MSELoss()
+            config['loss'] = 'mean_squared_error'
         else:
             self.loss_fn = torch.nn.NLLLoss(ignore_index=0)
             config['loss'] = 'NLL'
         self.loss_type = config['loss']
-        print(config)
+        # print(config)
 
     def encode(self, x, x_len):
 
@@ -102,7 +106,7 @@ class Seq2Seq(nn.Module):
         batch_size = encoder_outputs.size()[0]
         max_length = targets.size()[1]
         # decoder_attns = torch.zeros(batch_size, MAX_LENGTH, MAX_LENGTH)
-        decoder_input = Variable(torch.LongTensor([self.SOS] * batch_size)).squeeze(-1)
+        decoder_input = Variable(torch.LongTensor(batch_size)).squeeze(-1)
         decoder_context = encoder_outputs.transpose(1, 0)[-1]
         decoder_hidden = encoder_hidden
 
@@ -149,17 +153,17 @@ class Seq2Seq(nn.Module):
 
             use_teacher_forcing = random.random() > self.sampling_prob
 
-            if use_teacher_forcing and self.training:
-                decoder_input = targets[:, t]
+            # if use_teacher_forcing and self.training:
+            #     decoder_input = targets[:, t]
 
             # SCHEDULED SAMPLING
             # We use the target sequence at each time step which we feed in the decoder
-            else:
-                # TODO Instead of taking the direct one-hot prediction from the previous time step as the original paper
-                # does, we thought it is better to feed the distribution vector as it encodes more information about
-                # prediction from previous step and could reduce bias.
-                topv, topi = outputs.data.topk(1)
-                decoder_input = topi.squeeze(-1).detach()
+            # else:
+            #     # TODO Instead of taking the direct one-hot prediction from the previous time step as the original paper
+            #     # does, we thought it is better to feed the distribution vector as it encodes more information about
+            #     # prediction from previous step and could reduce bias.
+            #     topv, topi = outputs.data.topk(1)
+            #     decoder_input = topi.squeeze(-1).detach()
 
         labels = targets.contiguous().view(-1)
 
@@ -170,23 +174,19 @@ class Seq2Seq(nn.Module):
             mask_value = 0
 
         logits = mask_3d(logits.transpose(1, 0), targets_lengths, mask_value)
-        logits = logits.contiguous().view(-1, self.vocab_size)
+        logits = logits.contiguous().view(-1)
 
-        return logits, labels.long(), alignments
+        return logits, labels.float(), alignments
 
     @staticmethod
     def custom_loss(logits, labels):
-
         # create a mask by filtering out all tokens that ARE NOT the padding token
         tag_pad_token = 0
         mask = (labels > tag_pad_token).float()
-
         # count how many tokens we have
         nb_tokens = int(torch.sum(mask).data[0])
-
         # pick the values for the label and zero out the rest with the mask
         logits = logits[range(logits.shape[0]), labels] * mask
-
         # compute cross entropy loss which ignores all <PAD> tokens
         ce_loss = -torch.sum(logits) / nb_tokens
 

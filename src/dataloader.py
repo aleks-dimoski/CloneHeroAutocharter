@@ -1,6 +1,14 @@
 import os
+import wave
+
+import soundfile as sf
+import pandas as pd
+import numpy as np
+import pretty_midi
+import librosa
 import torch
 import shutil
+import music21
 from functools import reduce
 from docarray import Document
 from pydub import AudioSegment
@@ -31,7 +39,7 @@ def pad_tensor(vec, pad, value=0, dim=0):
         zeros = torch.ones((pad_size,)) * value
     else:
         raise NotImplementedError
-    return torch.cat([torch.Tensor(vec), zeros], dim=dim)
+    return torch.cat([vec, zeros], dim=dim)
 
 
 def pad_collate(batch, values=(0, 0), dim=0):
@@ -44,7 +52,6 @@ def pad_collate(batch, values=(0, 0), dim=0):
         ys - a LongTensor of all labels in batch
         ws - a tensor of sequence lengths
     """
-
     sequence_lengths = torch.Tensor([int(x[0].shape[dim]) for x in batch])
     sequence_lengths, xids = sequence_lengths.sort(descending=True)
     target_lengths = torch.Tensor([int(x[1].shape[dim]) for x in batch])
@@ -52,6 +59,7 @@ def pad_collate(batch, values=(0, 0), dim=0):
     # find longest sequence
     src_max_len = max(map(lambda x: x[0].shape[dim], batch))
     tgt_max_len = max(map(lambda x: x[1].shape[dim], batch))
+
     # pad according to max_len
     batch = [(pad_tensor(x, pad=src_max_len+100, dim=dim), pad_tensor(y, pad=tgt_max_len, dim=dim)) for (x, y) in batch]
 
@@ -63,36 +71,66 @@ def pad_collate(batch, values=(0, 0), dim=0):
     return xs, ys, sequence_lengths.int(), target_lengths.int()
 
 
-def load_midi_to_tensor(fpath):
-    print("TODO")
-    return None
+def load_midi_to_tensor(fpath: str) -> pd.DataFrame:
+    pm = pretty_midi.PrettyMIDI(fpath)
+    instrument = pm.instruments[0]
+    notes = {'pitch':[], 'start':[], 'end':[], 'step':[], 'duration':[]}
+
+    # Sort the notes by start time
+    sorted_notes = sorted(instrument.notes, key=lambda note: note.start)
+    prev_start = sorted_notes[0].start
+
+    for note in sorted_notes:
+        start = note.start
+        end = note.end
+        notes['pitch'].append(note.pitch)
+        notes['start'].append(start)
+        notes['end'].append(end)
+        notes['step'].append(start - prev_start)
+        notes['duration'].append(end - start)
+        prev_start = start
+
+    result = pd.DataFrame({name: np.array(value) for name, value in notes.items()})
+    result['pitch'] = result['pitch'].astype('float')
+    result = torch.from_numpy(result.to_numpy())
+    # print(result)
+    return result
 
 
 class AudioDataset(Dataset):
     def __init__(self, data_dir='dataset', reload_data=False):
         super(AudioDataset, self).__init__()
         self.audio_dir = data_dir
+        self.loaded_songs = os.listdir('dataset')
         self.lowest_dirs = list()
 
         if reload_data:
             for root, dirs, files in os.walk(self.audio_dir):
-                files = os.listdir(root)
-                chart_fname = None
-                for file in files:
-                    if file.endswith('.midi'):
-                        chart_fname = file
+                song_name = root.split('\\')[-1]
+                if song_name not in self.loaded_songs:
+                    files = os.listdir(root)
+                    chart_fname = None
+                    for file in files:
+                        if file.endswith('.mid'):
+                            chart_fname = file
 
-                if not dirs and chart_fname:
-                    self.lowest_dirs.append(root)
-                    song_name = root.split('\\')[-1]
+                    if not dirs and chart_fname:
+                        self.lowest_dirs.append(root)
+                        audio = [AudioSegment.from_ogg(os.path.join(root, fname)) for fname in files
+                                 if os.path.join(root, fname).endswith('.ogg')]
+                        try:
+                            combined_audio = reduce(lambda a, b: a.overlay(b, position=0), audio)
+                            new_audio_fpath = os.path.join('dataset', song_name)
+                            if not os.path.exists(new_audio_fpath):
+                                os.makedirs(new_audio_fpath)
+                            combined_audio.export(os.path.join(new_audio_fpath, song_name+'.ogg'), format='ogg')
 
-                    audio = [AudioSegment.from_ogg(os.path.join(root, fname)) for fname in files
-                             if os.path.join(root, fname).endswith('.ogg')]
+                            shutil.copyfile(os.path.join(root, chart_fname), os.path.join('dataset', song_name, song_name+'.midi'))
+                        except TypeError:
+                            pass
 
-                    combined_audio = reduce(lambda a, b: a+b, audio)
-                    combined_audio.export(os.path.join('dataset', song_name, song_name+'.ogg'), format='ogg')
-                    shutil.copyfile(os.path.join(root, chart_fname), os.path.join('dataset', song_name, song_name+'.midi'))
 
+        self.loaded_songs = os.listdir('dataset')
         self.audio_dir = 'dataset'
         self.songs = os.listdir('dataset')
 
@@ -100,12 +138,23 @@ class AudioDataset(Dataset):
         return len(self.songs)
 
     def __getitem__(self, idx):
-        # Load from file with docarray
-        song_name = self.songs[idx]
-        song = Document(uri=os.path.join('dataset', song_name, song_name+'.ogg')).load_uri_to_audio_tensor()
-        label = load_midi_to_tensor(os.path.join('dataset', song_name, song_name+'.midi'))
+        try:
+            # Load from file with docarray
+            song_name = self.songs[idx]
+            try:
+                song = torch.from_numpy(Document(uri=os.path.join('dataset', song_name, song_name+'.wav'))\
+                                        .load_uri_to_audio_tensor().tensor).float()
+            except FileNotFoundError:
+                x, _ = librosa.load(os.path.join('dataset', song_name, song_name+'.ogg'), sr=16000)
+                sf.write(os.path.join('dataset', song_name, song_name+'.wav'), x, 16000)
+                song = torch.from_numpy(Document(uri=os.path.join('dataset', song_name, song_name+'.wav'))\
+                                        .load_uri_to_audio_tensor().tensor).float()
+            label = load_midi_to_tensor(os.path.join('dataset', song_name, song_name+'.midi'))
+            # label = np.vectorize(pretty_midi.note_number_to_name(label['pitch']))
 
-        return song, label
+            return song, label
+        except ValueError:
+            return self.__getitem__(idx+1)
 
 
 # class CustomImageDataset(Dataset):

@@ -1,10 +1,26 @@
 import os
 import torch
 import torchsummary
+import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+
+
+def mask_3d(inputs, seq_len, mask_value=0.):
+    batches = inputs.size()[0]
+    assert batches == len(seq_len)
+    print(inputs.shape, seq_len)
+    max_idx = max(seq_len)
+    for n, idx in enumerate(seq_len):
+        if idx < max_idx.item():
+            if len(inputs.size()) == 3:
+                inputs[n, idx.int():, :] = mask_value
+            else:
+                assert len(inputs.size()) == 2, "The size of inputs must be 2 or 3, received {}".format(inputs.size())
+                inputs[n, idx.int():] = mask_value
+    return inputs
 
 
 class EncoderRNN(nn.Module):
@@ -33,16 +49,24 @@ class EncoderRNN(nn.Module):
         self.gpu = config.get("gpu", False)
 
     def run_dnn(self, x):
-        for i in range(self.dnn_layers):
-            x = F.relu(getattr(self, 'dnn_' + str(i))(x))
+        all_enc = list()
+        for i in range(int(x.shape[1]/4096)-1):
+            x_p = x.narrow(1, i*4096, 4096)
+            for j in range(self.dnn_layers):
+                x_p = F.relu(getattr(self, 'dnn_' + str(j))(x_p))
+            x_p = torch.unsqueeze(x_p, 1)
+            all_enc.append(x_p)
+        x = torch.cat(all_enc, dim=1)
         return x
 
     def forward(self, inputs, hidden, input_lengths):
+        inputs.cuda()
         if self.dnn_layers > 0:
             inputs = self.run_dnn(inputs)
-        x = pack_padded_sequence(inputs, input_lengths, batch_first=True)
-        output, state = self.rnn(x, hidden)
-        output, _ = pad_packed_sequence(output, batch_first=True, padding_value=0.)
+        # x = pack_padded_sequence(inputs.cpu(), input_lengths.cpu(), batch_first=True)
+        output, state = self.rnn(inputs, hidden)
+        # print(output.shape)
+        # output, _ = pad_packed_sequence(output, batch_first=True, padding_value=0.)
 
         if self.bi:
             output = output[:, :, :self.hidden_size] + output[:, :, self.hidden_size:]
@@ -133,9 +157,12 @@ class AttentionDecoder(Decoder):
         encoder_outputs = kwargs["encoder_outputs"]
         seq_len = kwargs.get("seq_len", None)
 
+
+        # print(input.shape)
         # RNN (Eq 7 paper)
         embedded = self.embedding(input).unsqueeze(1)  # [B, H]
         prev_hidden = prev_hidden.unsqueeze(0)
+        # print(prev_hidden.shape, embedded.shape)
         rnn_output, hidden = self.rnn(embedded, prev_hidden)
         rnn_output = rnn_output.squeeze(1)
 
